@@ -1,0 +1,20 @@
+# AXA DevSecOps Reference: CODEOWNERS
+#
+# CODEOWNERS works with GitHub branch protection to require specific reviewers
+# on PRs that touch specific paths. Combined with "Require review from Code
+# Owners" branch protection rule, this enforces Security Champion approval
+# on security-sensitive changes.
+#
+# AXA: SSDLC-IAM-01 (separation of duties), Git Branching Strategy
+
+# Default owner: any change requires a Tech Lead review
+*                               @your-org/tech-leads
+
+# Security-sensitive files require a Security Champion in addition
+/.github/workflows/             @your-org/tech-leads @your-org/security-champions
+/.pre-commit-config.yaml        @your-org/security-champions
+/.gitleaks.toml                 @your-org/security-champions
+/Dockerfile                     @your-org/tech-leads @your-org/security-champions
+/k8s/                           @your-org/tech-leads @your-org/security-champions
+/terraform/                     @your-org/tech-leads @your-org/security-champions
+/CODEOWNERS                     @your-org/security-champions

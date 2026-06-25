@@ -1,0 +1,168 @@
+# AXA DevSecOps Reference: Kubernetes deployment manifest
+#
+# AXA controls applied:
+# - CLDEV-CFG-02: no privileged containers, minimal capabilities
+# - CLDEV-CFG-01: read-only root filesystem, non-root user
+# - SSDLC-IAM-01: explicit service account, no default
+# - SSDLC-OPS-01: liveness and readiness probes for monitoring
+#
+# This manifest is scanned by Checkov in Stage 9 of the pipeline.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: axa-devsecops-demo
+  namespace: default
+  # No automatic token mount: application does not need to call K8s API
+automountServiceAccountToken: false
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axa-devsecops-demo
+  namespace: default
+  labels:
+    app: axa-devsecops-demo
+    # AXA tagging convention (CLDEV-RSC-01)
+    axa.com/owner: "axa-group-security"
+    axa.com/data-classification: "internal"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: axa-devsecops-demo
+  template:
+    metadata:
+      labels:
+        app: axa-devsecops-demo
+    spec:
+      serviceAccountName: axa-devsecops-demo
+      automountServiceAccountToken: false
+
+      # Pod-level security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: app
+          image: ghcr.io/axa-group/axa-devsecops-demo:1.0.0
+          imagePullPolicy: IfNotPresent
+
+          # Container-level security context (defence in depth with pod-level)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop:
+                - ALL
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # Resource limits (prevents one pod from starving the node)
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          # Liveness probe: K8s restarts container if this fails repeatedly
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          # Readiness probe: traffic is only routed to ready pods
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          # Spring Boot needs /tmp writeable for its work directory.
+          # readOnlyRootFilesystem: true means we must mount an emptyDir for it.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: axa-devsecops-demo
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: axa-devsecops-demo
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+---
+
+# NetworkPolicy: pod isolation. By default, allow nothing.
+# Then explicitly allow only the ingress and egress needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: axa-devsecops-demo-netpol
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: axa-devsecops-demo
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from the ingress controller namespace only
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow HTTPS to the wider internet (for API calls if needed)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

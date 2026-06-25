@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- AXA DevSecOps Reference Application
+         Trivially small Spring Boot REST API. The point is the pipeline,
+         not the application. -->
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.axa.demo</groupId>
+    <artifactId>devsecops-reference</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>AXA DevSecOps Reference</name>
+
+    <properties>
+        <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <spotbugs.version>4.8.5.0</spotbugs.version>
+        <findsecbugs.version>1.13.0</findsecbugs.version>
+        <dependency-check.version>9.2.0</dependency-check.version>
+        <cyclonedx.version>2.8.0</cyclonedx.version>
+    </properties>
+
+    <dependencies>
+        <!-- Spring Boot web starter for the REST endpoints -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Spring Boot actuator for the /health endpoint -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Test dependency -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Spring Boot fat-jar plugin -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- ========================================================== -->
+            <!-- SAST: SpotBugs with FindSecBugs plugin                      -->
+            <!-- ========================================================== -->
+            <!-- AXA: SSDLC-TST-01                                           -->
+            <!-- Runs during: mvn spotbugs:check (Stage 3 of the pipeline)  -->
+            <plugin>
+                <groupId>com.github.spotbugs</groupId>
+                <artifactId>spotbugs-maven-plugin</artifactId>
+                <version>${spotbugs.version}</version>
+                <configuration>
+                    <effort>Max</effort>
+                    <threshold>Low</threshold>
+                    <failOnError>true</failOnError>
+                    <plugins>
+                        <plugin>
+                            <groupId>com.h3xstream.findsecbugs</groupId>
+                            <artifactId>findsecbugs-plugin</artifactId>
+                            <version>${findsecbugs.version}</version>
+                        </plugin>
+                    </plugins>
+                </configuration>
+            </plugin>
+
+            <!-- ========================================================== -->
+            <!-- SCA: OWASP Dependency-Check                                 -->
+            <!-- ========================================================== -->
+            <!-- AXA: SSDLC-DEV-02 and SSDLC-TST-01                          -->
+            <!-- Runs during: mvn dependency-check:check (Stage 4)          -->
+            <plugin>
+                <groupId>org.owasp</groupId>
+                <artifactId>dependency-check-maven</artifactId>
+                <version>${dependency-check.version}</version>
+                <configuration>
+                    <!-- failBuildOnCVSS=7 fails on any CVSS 7.0+ finding -->
+                    <!-- Per AXA Patching SLA, Critical and High block release -->
+                    <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <skipTestScope>true</skipTestScope>
+                    <formats>
+                        <format>HTML</format>
+                        <format>JSON</format>
+                    </formats>
+                </configuration>
+            </plugin>
+
+            <!-- ========================================================== -->
+            <!-- SBOM: CycloneDX                                             -->
+            <!-- ========================================================== -->
+            <!-- AXA: SSDLC-DEV-02                                           -->
+            <!-- Runs during: mvn cyclonedx:makeAggregateBom (Stage 6)      -->
+            <plugin>
+                <groupId>org.cyclonedx</groupId>
+                <artifactId>cyclonedx-maven-plugin</artifactId>
+                <version>${cyclonedx.version}</version>
+                <configuration>
+                    <outputName>bom</outputName>
+                    <outputFormat>json</outputFormat>
+                    <projectType>application</projectType>
+                </configuration>
+            </plugin>
+
+            <!-- ========================================================== -->
+            <!-- Maven Enforcer: bans version ranges and -SNAPSHOT in prod   -->
+            <!-- ========================================================== -->
+            <!-- AXA: SSDLC-DEV-02 (lock dependency versions)                -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>enforce-no-snapshots-no-ranges</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <banDynamicVersions/>
+                                <requireReleaseDeps>
+                                    <message>No -SNAPSHOT dependencies allowed.</message>
+                                </requireReleaseDeps>
+                            </rules>
+                            <fail>true</fail>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

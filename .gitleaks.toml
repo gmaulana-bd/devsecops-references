@@ -1,0 +1,27 @@
+# Gitleaks configuration for AXA DevSecOps Reference
+#
+# Default Gitleaks rules detect: AWS keys, GitHub tokens, GCP service accounts,
+# Slack tokens, Stripe keys, generic high-entropy strings, and more.
+#
+# This file extends the defaults with project-specific rules and allowlist
+# entries for known false positives.
+
+title = "AXA DevSecOps Gitleaks Config"
+
+[extend]
+# Use Gitleaks' built-in default rule set as the baseline
+useDefault = true
+
+[allowlist]
+description = "Allowlist for known false positives"
+# Files that are allowed to contain example credentials (for documentation)
+paths = [
+    '''docs/PIPELINE\.md''',
+    '''docs/HOW_TO_RUN\.md''',
+    '''README\.md''',
+]
+# Strings that match secret patterns but are explicitly example values
+regexes = [
+    '''AKIAIOSFODNN7EXAMPLE''',  # AWS docs example
+    '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',  # AWS docs example
+]

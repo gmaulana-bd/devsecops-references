@@ -1,0 +1,353 @@
+name: DevSecOps Full Lifecycle Pipeline
+
+# This workflow demonstrates the complete AXA DevSecOps lifecycle.
+# Every stage maps to an AXA SDLC requirement (see README.md for the mapping).
+#
+# Triggers: every push and every pull request to the main and develop branches.
+# Some stages (deploy, post-deploy) only run on push to main.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+# Minimum permissions principle (OWASP CI/CD Top 10, Risk 5).
+# By default, GITHUB_TOKEN gets too much. Explicitly grant only what is needed.
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write  # for uploading SARIF results to GitHub Security tab
+
+# Environment variables shared across stages.
+env:
+  JAVA_VERSION: '17'
+  IMAGE_NAME: axa-devsecops-demo
+  REGISTRY: ghcr.io
+
+jobs:
+
+  # ==========================================================================
+  # STAGE 1 (pre-commit) is handled CLIENT-SIDE by the developer's local hook.
+  # See .pre-commit-config.yaml. This server-side stage re-runs the same scan
+  # to catch any commit that was pushed with --no-verify (bypassing the hook).
+  # ==========================================================================
+
+  # ==========================================================================
+  # STAGE 2: Build
+  # Maven builds the application. Fails fast if compilation breaks.
+  # AXA: SSDLC-DEV-01
+  # ==========================================================================
+  build:
+    name: Stage 2 - Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        # Pinned to commit SHA, not tag (OWASP CI/CD Top 10, Risk 3).
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93  # v4.0.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Compile
+        run: mvn -B compile
+
+      - name: Unit tests
+        run: mvn -B test
+
+  # ==========================================================================
+  # STAGE 3: SAST (Static Application Security Testing)
+  # SpotBugs with FindSecBugs plugin scans the compiled bytecode.
+  # AXA: SSDLC-TST-01
+  # ==========================================================================
+  sast:
+    name: Stage 3 - SAST
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Set up JDK
+        uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Run SpotBugs with FindSecBugs
+        # The maven-spotbugs-plugin in pom.xml is configured with FindSecBugs
+        # which adds dozens of security-specific detectors on top of SpotBugs.
+        run: mvn -B spotbugs:check
+        continue-on-error: false  # fail the build on any High or Critical finding
+
+      - name: Upload SpotBugs report
+        if: always()  # upload even if the previous step failed
+        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3  # v4.3.1
+        with:
+          name: spotbugs-report
+          path: target/spotbugsXml.xml
+
+  # ==========================================================================
+  # STAGE 4: SCA (Software Composition Analysis)
+  # OWASP Dependency-Check scans all dependencies (direct and transitive)
+  # against the NVD CVE database.
+  # AXA: SSDLC-DEV-02, SSDLC-TST-01
+  # ==========================================================================
+  sca:
+    name: Stage 4 - SCA
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Set up JDK
+        uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Cache NVD database
+        # Caching the NVD database speeds up subsequent runs dramatically.
+        uses: actions/cache@13aacd865c20de90d75de3b17ebe84f7a17d57d2  # v4.0.0
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ runner.os }}-${{ hashFiles('pom.xml') }}
+          restore-keys: nvd-${{ runner.os }}-
+
+      - name: Run OWASP Dependency-Check
+        # failBuildOnCVSS=7 fails the build on any CVSS 7.0+ (High or Critical).
+        # Per AXA Patching SLA: Critical and High block release.
+        run: mvn -B org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7
+
+      - name: Upload Dependency-Check report
+        if: always()
+        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.html
+
+  # ==========================================================================
+  # STAGE 5: Secret Scan in CI (defence in depth for --no-verify)
+  # Server-side Gitleaks scan even though developers also have the pre-commit
+  # hook. Defense in depth: a developer can bypass the local hook with
+  # git commit --no-verify, but they cannot bypass this server-side check.
+  # AXA: SSDLC-DEV-03, CLDEV-IAM-02
+  # ==========================================================================
+  secret-scan:
+    name: Stage 5 - Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        with:
+          fetch-depth: 0  # full history, so Gitleaks can scan all commits
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@cb7149b9b57195b609bba6b22fd6e1e1f2780211  # v2.3.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Will fail the build if any secret is detected (Absolute Rule).
+
+  # ==========================================================================
+  # STAGE 6: SBOM Generation
+  # CycloneDX generates the Software Bill of Materials.
+  # The bom.json is uploaded as an artifact and (on releases) committed to repo.
+  # AXA: SSDLC-DEV-02
+  # ==========================================================================
+  sbom:
+    name: Stage 6 - SBOM
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Set up JDK
+        uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Generate SBOM (CycloneDX)
+        run: mvn -B org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3
+        with:
+          name: sbom-cyclonedx
+          path: target/bom.json
+
+  # ==========================================================================
+  # STAGE 7: Container Build
+  # Multi-stage Dockerfile produces a minimal image (distroless base, non-root).
+  # AXA: CLDEV-CFG-01
+  # ==========================================================================
+  container-build:
+    name: Stage 7 - Container Build
+    runs-on: ubuntu-latest
+    needs: [sast, sca, secret-scan]
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226  # v3.0.0
+
+      - name: Build container image
+        id: build
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          echo "digest=$(docker image inspect ${{ env.IMAGE_NAME }}:${{ github.sha }} --format '{{.Id}}')" >> $GITHUB_OUTPUT
+
+  # ==========================================================================
+  # STAGE 8: Container Scan
+  # Trivy scans the built image for OS-level CVEs, application CVEs, and
+  # misconfigurations (running as root, etc).
+  # AXA: CLDEV-CFG-01, SSDLC-TST-01
+  # ==========================================================================
+  container-scan:
+    name: Stage 8 - Container Scan
+    runs-on: ubuntu-latest
+    needs: container-build
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Build image (rebuild for scan, since artifacts do not transfer Docker images)
+        run: docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+      - name: Run Trivy scanner
+        uses: aquasecurity/trivy-action@b2933f565dbc598b29947660e66259e3c7bc8561  # 0.20.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'  # fail on Critical or High
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@012739e5082ff0c22ca6d6ab32e07c36df03c4a4  # v3.22.12
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ==========================================================================
+  # STAGE 9: IaC Scan
+  # Checkov scans Terraform, Kubernetes manifests, and Dockerfiles for
+  # security misconfigurations. Maps directly to CIS AWS controls.
+  # AXA: CLDEV-TES-01, CIS AWS v5.0.0
+  # ==========================================================================
+  iac-scan:
+    name: Stage 9 - IaC Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@7ac718e5e3735ff5bcc9fdf75ffbeb1f78751cfc  # v12.2640.0
+        with:
+          directory: .
+          framework: terraform,kubernetes,dockerfile
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          # soft_fail: false (default), so any Checkov finding fails the build
+
+      - name: Upload Checkov SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@012739e5082ff0c22ca6d6ab32e07c36df03c4a4
+        with:
+          sarif_file: checkov-results.sarif
+
+  # ==========================================================================
+  # STAGE 10: DAST against staging
+  # OWASP ZAP baseline scan against the staging environment.
+  # Only runs on push to develop (not on PRs and not on main).
+  # AXA: SSDLC-TST-02
+  # ==========================================================================
+  dast:
+    name: Stage 10 - DAST
+    runs-on: ubuntu-latest
+    needs: [container-scan, iac-scan]
+    # Only run on push to develop (after merge), not on every PR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Run ZAP baseline scan
+        # NOTE: in a real pipeline, the application must be deployed to staging
+        # before this step. For this reference repo, we point at a placeholder.
+        # Replace https://staging.example.com with your actual staging URL.
+        uses: zaproxy/action-baseline@a99feab3f0eba3c70d4cae5a900f95e09c5a3ab1  # v0.12.0
+        with:
+          target: 'https://staging.example.com'
+          fail_action: false  # do not fail build on baseline findings, but report them
+        continue-on-error: true  # remove this once a real staging environment is wired in
+
+  # ==========================================================================
+  # STAGE 11: Manual Approval Gate (production deployment)
+  # Uses GitHub Environments with required reviewers.
+  # The "production" environment is configured (in GitHub Settings, not in YAML)
+  # to require approval from a Tech Lead before this job runs.
+  # AXA: SSDLC-DEP-03 (4-eyes approval)
+  # ==========================================================================
+  deploy-production:
+    name: Stage 11 - Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [container-scan, iac-scan, sbom]
+    # Only run on push to main, never on PRs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      # Configure required reviewers in GitHub: Settings -> Environments -> production
+      # The "url" appears in the GitHub UI after deployment succeeds
+      url: https://prod.example.com
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Authenticate to cloud (OIDC, short-lived credentials)
+        # AXA: CLDEV-IAM-03 (short-lived tokens for cloud authentication)
+        # OIDC replaces long-lived secrets (AWS_ACCESS_KEY) with a 15-minute token.
+        # The trust policy on the cloud side validates the GitHub OIDC issuer.
+        run: |
+          echo "In production: configure AWS or Azure OIDC trust relationship."
+          echo "See https://docs.github.com/en/actions/deployment/security-hardening-your-deployments"
+          echo "for OIDC setup details."
+
+      - name: Deploy via IaC
+        # AXA: SSDLC-DEP-03 (deployment via IaC, not manual SSH)
+        run: |
+          echo "In production: terraform apply -auto-approve in a controlled workspace"
+          echo "Or: kubectl apply -f k8s/ against the production cluster"
+
+      - name: Smoke test deployed application
+        run: |
+          echo "In production: curl health endpoint, verify response, check logs"
+
+  # ==========================================================================
+  # STAGE 12: Post-deploy Verification
+  # After successful deploy, verify CIS compliance via Security Hub.
+  # AXA: SSDLC-OPS-01 (continuous monitoring)
+  # ==========================================================================
+  post-deploy:
+    name: Stage 12 - Post-Deploy Verification
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger AWS Security Hub re-evaluation
+        run: |
+          echo "In production: aws securityhub batch-import-findings ..."
+          echo "Or wait for next scheduled Security Hub scan to pick up changes."
+
+      - name: Notify monitoring (DataDog, Splunk, etc.)
+        run: |
+          echo "In production: send deployment event to monitoring stack."
+          echo "This creates a marker so any post-deploy alerts can be correlated."
+
+      - name: Update CHANGELOG status
+        run: |
+          echo "Optionally: post deployment status to CHANGELOG.md or release notes."
