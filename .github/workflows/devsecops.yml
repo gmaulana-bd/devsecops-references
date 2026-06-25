@@ -113,7 +113,7 @@ jobs:
 
       - name: Cache NVD database
         # Caching the NVD database speeds up subsequent runs dramatically.
-        uses: actions/cache@13aacd865c20de90d75de3b17ebe84f7a17d57d2  # v4.0.0
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.m2/repository/org/owasp/dependency-check-data
           key: nvd-${{ runner.os }}-${{ hashFiles('pom.xml') }}
@@ -147,7 +147,7 @@ jobs:
           fetch-depth: 0  # full history, so Gitleaks can scan all commits
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@cb7149b9b57195b609bba6b22fd6e1e1f2780211  # v2.3.2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Will fail the build if any secret is detected (Absolute Rule).
@@ -248,7 +248,7 @@ jobs:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@7ac718e5e3735ff5bcc9fdf75ffbeb1f78751cfc  # v12.2640.0
+        uses: bridgecrewio/checkov-action@0e60d3d4b5467608a2b6a7a2c0a6febd274b7fc6 # v8
         with:
           directory: .
           framework: terraform,kubernetes,dockerfile
