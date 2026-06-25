@@ -110,6 +110,18 @@ jobs:
     steps:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
 
+      - name: Set up JDK
+        uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93  # v4.0.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Resolve dependencies into local Maven cache
+        # Populates ~/.m2 so Trivy reads POMs locally instead of hammering
+        # Maven Central (which 429-throttles shared CI runner IPs).
+        run: mvn -B dependency:resolve dependency:resolve-plugins
+
       - name: Install Trivy (official install script, pinned version)
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
@@ -117,8 +129,10 @@ jobs:
           trivy --version
 
       - name: SCA scan (dependencies, fail on CRITICAL or HIGH)
-        # Per AXA Patching SLA: Critical and High block release.
-        # Set --exit-code 0 to report-only instead of gating.
+        # TRIVY_OFFLINE_SCAN stops Trivy reaching out to Maven Central; it uses
+        # the local ~/.m2 cache populated above.
+        env:
+          TRIVY_OFFLINE_SCAN: "true"
         run: |
           trivy fs \
             --scanners vuln \
@@ -260,19 +274,35 @@ jobs:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
 
       - name: Run Checkov
+        id: checkov
         uses: bridgecrewio/checkov-action@0e60d3d4b5467608a2b6a7a2c0a6febd274b7fc6  # v8
         with:
           directory: .
           framework: terraform,kubernetes,dockerfile
           output_format: cli,sarif
-          output_file_path: console,results.sarif
+          output_file_path: console,checkov.sarif.d
           soft_fail: true
 
-      - name: Upload Checkov SARIF
+      - name: Locate the SARIF file
         if: always()
+        id: findsarif
+        run: |
+          echo "Looking for the SARIF Checkov produced:"
+          find . -name "*.sarif" -type f 2>/dev/null || true
+          SARIF=$(find . -name "*.sarif" -type f 2>/dev/null | head -n1)
+          if [ -n "$SARIF" ]; then
+            echo "found=$SARIF" >> "$GITHUB_OUTPUT"
+            echo "Found SARIF at: $SARIF"
+          else
+            echo "found=" >> "$GITHUB_OUTPUT"
+            echo "No SARIF produced (Checkov may have found nothing to scan)."
+          fi
+
+      - name: Upload Checkov SARIF
+        if: always() && steps.findsarif.outputs.found != ''
         uses: github/codeql-action/upload-sarif@2a00a6e621b3efd9d09658ee2b02c1bb4668b985  # v3.36.1
         with:
-          sarif_file: results.sarif
+          sarif_file: ${{ steps.findsarif.outputs.found }}
         continue-on-error: true
 
   # ==========================================================================
