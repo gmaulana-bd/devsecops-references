@@ -249,7 +249,7 @@ jobs:
             | sudo sh -s -- -b /usr/local/bin v${{ env.TRIVY_VERSION }}
           trivy --version
 
-      - name: Scan image with Trivy (advisory: report, do not block)
+      - name: "Scan image with Trivy (advisory - report, do not block)"
         # Container base-image CVEs (Debian + JDK packages inside the distroless
         # base) are largely outside the app team's control: many are Debian
         # "will_not_fix" and the rest lag a distroless rebuild. --ignore-unfixed
