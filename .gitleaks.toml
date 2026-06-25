@@ -20,8 +20,12 @@ paths = [
     '''docs/HOW_TO_RUN\.md''',
     '''README\.md''',
 ]
-# Strings that match secret patterns but are explicitly example values
+# Strings that match secret patterns but are explicitly example values.
+# Anchored with \b so they allowlist ONLY the exact AWS documentation values,
+# not real-looking keys that merely contain them as a substring
+# (e.g. the unanchored 'AKIAIOSFODNN7EXAMPLE' previously swallowed
+# 'AKIAIOSFODNN7EXAMPLEXX' and let a planted test secret pass).
 regexes = [
-    '''AKIAIOSFODNN7EXAMPLE''',  # AWS docs example
-    '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',  # AWS docs example
+    '''\bAKIAIOSFODNN7EXAMPLE\b''',  # AWS docs example access key id (exact)
+    '''\bwJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\b''',  # AWS docs example secret key (exact)
 ]
